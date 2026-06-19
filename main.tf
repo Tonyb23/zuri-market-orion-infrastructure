@@ -151,6 +151,15 @@ resource "aws_security_group" "k3s_sg" {
         cidr_blocks = ["0.0.0.0/0"]
     }
 
+# Allow VITE API traffic on port 5000
+    ingress {
+        description = "VITE API" 
+        from_port = 5000
+        to_port	= 5000
+        protocol= "tcp" 
+        cidr_blocks = ["0.0.0.0/0"]
+    }
+
     # Allow all outbound traffic so the server can download updates, etc.
     egress {
         description = "All outbound traffic" 
