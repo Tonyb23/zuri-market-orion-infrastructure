@@ -1,5 +1,8 @@
 # Zuri Market — Infrastructure
 
+## Architecture Diagram
+![Architecture Diagram](https://raw.githubusercontent.com/Tonyb23/zuri-market-orion-frontend/1dcd84f5d1be38099473329429b941b0990ac7bc/zurimarket-architecture.svg)
+
 ## 1. Project Overview
 
 This repo provisions the AWS infrastructure that the Zuri Market app runs on, using **Terraform**. It creates a VPC, a public subnet, a single EC2 instance that auto-installs **k3s** (lightweight Kubernetes) on first boot, the security group that controls traffic to it, and the IAM role that lets the instance read application secrets from AWS Secrets Manager. The frontend and backend repos build and push container images; this repo is what gives those images somewhere to run.
