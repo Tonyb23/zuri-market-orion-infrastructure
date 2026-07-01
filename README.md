@@ -1,11 +1,16 @@
 # Zuri Market — Infrastructure
 
-## Architecture Diagram
-![Architecture Diagram](https://raw.githubusercontent.com/Tonyb23/zuri-market-orion-frontend/1dcd84f5d1be38099473329429b941b0990ac7bc/zurimarket-architecture.svg)
-
 ## 1. Project Overview
 
 This repo provisions the AWS infrastructure that the Zuri Market app runs on, using **Terraform**. It creates a VPC, a public subnet, a single EC2 instance that auto-installs **k3s** (lightweight Kubernetes) on first boot, the security group that controls traffic to it, and the IAM role that lets the instance read application secrets from AWS Secrets Manager. The frontend and backend repos build and push container images; this repo is what gives those images somewhere to run.
+
+## Related Repositories
+
+**[Zuri Market - Frontend](https://github.com/Tonyb23/zuri-market-orion-frontend)**  
+**[Zuri Market - Backend](https://github.com/Tonyb23/zuri-market-orion-backend)**
+
+## Architecture Diagram
+![Architecture Diagram](https://raw.githubusercontent.com/Tonyb23/zuri-market-orion-frontend/1dcd84f5d1be38099473329429b941b0990ac7bc/zurimarket-architecture.svg)
 
 ## 2. Tech Stack
 
@@ -21,11 +26,13 @@ This repo provisions the AWS infrastructure that the Zuri Market app runs on, us
 zuri-market-orion-infrastructure/
 ├── bootstrap/
 │   └── main.tf          # Phase 1: creates the S3 bucket that stores Terraform's remote state
-├── main.tf                # Phase 2: VPC, subnet, IGW, route table, security group, IAM role, EC2 instance
+├── main.tf                # Phase 2: Core infrastructure resources - VPC, subnet, IGW, route table, security groups, IAM role, EC2 instance
 ├── variables.tf            # Input variables (region, project name, instance type, key pair name)
-├── outputs.tf                # Values printed after apply (public IP, instance ID, SSH command, app URL, VPC ID)
+├── outputs.tf                # Values printed after terraform apply (public IP, instance ID, SSH command, app URL, VPC ID)
 └── .gitignore
 ```
+
+### Component Reference
 
 - **`bootstrap/main.tf`** — A small, standalone Terraform configuration with no remote backend of its own (it can't store its state in a bucket that doesn't exist yet). Run once, before anything else.
 - **`main.tf`** — The actual infrastructure: networking, security group, IAM, and the EC2 instance. Configured to store *its* state in the bucket that `bootstrap/` creates.
@@ -34,9 +41,9 @@ zuri-market-orion-infrastructure/
 
 ## 4. Prerequisites
 
-- An AWS account, with credentials available to Terraform via the standard AWS credential chain (`aws configure`, environment variables, or an assumed role — see [Secrets & Credentials](#9-secrets--credentials))
+- An AWS account, with credentials available to Terraform via the standard AWS credential chain (`aws configure`, environment variables, or an assumed role — see [Secrets & Credentials](#9-secrets--credentials), verify your credentials are working with `aws sts get-caller-identity`)
 - Terraform `~> 1.0` installed locally
-- An EC2 key pair already created in the target AWS region, with a name matching the `key_pair_name` variable (default: `ubuntu-ec2-key`) — Terraform does not create this for you
+- An EC2 SSH key pair already created in the target AWS region, with a name matching the `key_pair_name` variable (default: `ubuntu-ec2-key`) — you can download and save this file for SSH access into EC2
 - Sufficient AWS permissions to create VPCs, subnets, security groups, IAM roles/policies, EC2 instances, and S3 buckets
 
 ## 5. Variables
@@ -75,6 +82,7 @@ Deployment happens in two phases, in order. There is no CI/CD pipeline in this r
 ### Phase 0 — Clone the repo
 
 ```bash
+# Clone the repo or create your own bare clone for more flexibility
 git clone https://github.com/Tonyb23/zuri-market-orion-infrastructure.git
 ```
 
@@ -93,7 +101,7 @@ This configuration has no backend block of its own, so its state stays **local**
 
 ### Phase 2 — Main infrastructure
 
-Provisions the VPC, subnet, security group, IAM role, and the EC2 instance itself.
+Provisions the VPC, subnet, IGW, route table, security groups, IAM role, and the EC2 instance itself.
 
 ```bash
 cd ..   # back to the repo root
@@ -104,7 +112,7 @@ terraform apply
 
 `terraform init` here connects to the S3 backend created in Phase 1, so it must run after bootstrap has succeeded at least once.
 
-## 8. Outputs
+### Outputs
 
 After a successful `apply` in the root module, Terraform prints:
 
@@ -115,6 +123,72 @@ After a successful `apply` in the root module, Terraform prints:
 | `ssh_command` | A ready-to-run `ssh -i ...` command to connect to the instance |
 | `app_url` | URL where the deployed app becomes reachable once k3s and the app are running (`http://<public_ip>:30080`) |
 | `vpc_id` | The ID of the created VPC |
+
+
+### Phase 4 — Connect to EC2, Verify K3s and configure KUBECONFIG
+
+```bash
+# SSH into EC2
+ssh -i "path-to-your-ssh-key.pem" ubuntu@YOUR_EC2_PUBLIC_IP
+
+# Check k3s is running, it was installed by terraform in the user-date script
+kubectl get nodes
+```
+
+You might have to reinstall k3s using the EC2 public IP as a SAN (Subject Alternative name) as this was setup using the private IP and would cause your pipeline to fail when it tries to connect to the EC2 instance using this. 
+
+> Another better way to do this is by using an elastic IP so it’s added during provisioning by terraform so your IP remains the same and you don't need to always reconfigure this and your GitHub Actions secrets
+
+```bash
+# Stop K3s
+sudo systemctl stop k3s
+
+# Remove the old TLS certificates so it gets regenerated
+sudo rm -rf /var/lib/rancher/k3s/server/tls/
+
+# reinstall k3s with your EC2 public IP as a SAN
+curl -sfL https://get.k3s.io | sh -s - --tls-san YOUR_EC2_PUBLIC_IP
+
+# K3s will regenerate certificates with the new SAN
+
+# Make the kubeconfig readable by the ubuntu user (not just root)
+chmod 644 /etc/rancher/k3s/k3s.yaml
+
+# Check k3s is now running again
+kubectl get nodes
+```
+
+Retrieve KUBECONFIG
+
+```bash
+# replace 127.0.0.1 with your EC2 public IP address
+sed "s/127.0.0.1/YOUR_EC2_PUBLIC_IP/g" /etc/rancher/k3s/k3s.yaml 
+
+# Copy the output into your GitHub Actions Secret KUBECONFIG
+```
+
+### Phase 5 — Store application secrets in AWS Secrets Manager
+
+You can either create this directly on AWS Console or from your local terminal. The pipeline reads from these secrets on every deploy but does not create them — they must exist before the first pipeline run.
+
+```bash
+aws secretsmanager create-secret \
+  --name zurimarket/api-secret-key \
+  --secret-string '{"API_SECRET_KEY":"your-real-prod-secret-key"}' \
+  --region us-east-1
+
+aws secretsmanager create-secret \
+  --name zurimarket/store-name \
+  --secret-string '{"STORE_NAME":"Your-store-name"}' \
+  --region us-east-1
+```
+
+> Use a strong, unique value for `API_SECRET_KEY` in production — not the dev placeholder from your .env file. These values never appear in Git, GitHub Secrets, Kubernetes manifest files, or Docker images. You can also choose to encode it if you want
+
+Once this is done you can then proceed with the deployment of the Frontend and Backend Deployments
+
+See [Zuri Market - Frontend](https://github.com/Tonyb23/zuri-market-orion-frontend) and [Zuri Market - Backend](https://github.com/Tonyb23/zuri-market-orion-backend) for more details
+
 
 ## 9. Secrets & Credentials
 
@@ -133,3 +207,27 @@ terraform destroy
 ```
 
 The S3 state bucket created in `bootstrap/` is intentionally harder to remove: it has `lifecycle { prevent_destroy = true }` set, so a plain `terraform destroy` inside `bootstrap/` will fail. This is deliberate — it protects your Terraform state history from being deleted by accident. Remove the `prevent_destroy` line yourself first if you genuinely need to delete the bucket.
+
+## 11 Future Improvement Opportunities
+
+### Infrastructure 
+
+| Improvement | Why it matters |
+|---|---|
+| Use Modules for Terraform | One large `main.tf` becomes hard to maintain; modules make infrastructure provisioning reusable |
+| Replace single EC2 instance with Auto Scaling Groups | A single EC2 instance is a single point of failure — if it goes down, both the frontend and backend go with it. Auto Scaling Groups automatically replace unhealthy instances and scale out under load. |
+| Replace k3s with managed EKS or ECS/Fargate | Managing a self-hosted Kubernetes cluster on a single instance means you are responsible for upgrades, high availability, and the control plane. EKS or ECS/Fargate offloads this to AWS, reducing operational risk significantly. |
+
+### Overall Project 
+
+| Improvement | Why it matters |
+|---|---|
+| Multi-environment pipeline with dev, staging, and production | All changes currently go directly to production on every push to main. A dev → staging → prod promotion model with environment-scoped GitHub Secrets means changes are validated in a lower environment before reaching real users. |
+| Add HTTPS and TLS across all services end to end | All traffic currently travels over plain HTTP between the user and the frontend, and between the frontend and the backend API. HTTPS is non-negotiable for production: it protects data in transit, is required for modern browser APIs, and is expected by users. |
+| Deploy a logging, monitoring, and alerting solution (ELK stack, CloudWatch or Prometheus + Grafana) | There is currently no visibility into pod health, API response times, error rates, or resource usage after deployment. Without monitoring you are blind to problems until users report them. CloudWatch or a Prometheus/Grafana stack surfaces issues proactively. |
+
+This list is not exhaustive but provides some idea on how to move the project toward production readiness and engineering best practices
+
+---
+
+*Author [Anthony Ubani](https://www.linkedin.com/in/anthonyifeanyiubani/)*

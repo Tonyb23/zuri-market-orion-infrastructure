@@ -26,7 +26,7 @@ variable "instance_type" {
 # This must match the key pair you must have created in the AWS region you are deploying to. 
 
 variable "key_pair_name" {
-    description = "Name of the AWS EC2Key Pair for SSH access"
+    description = "Name of the AWS EC2 Key Pair for SSH access"
     type = string
     default = "ubuntu-ec2-key" 
 }

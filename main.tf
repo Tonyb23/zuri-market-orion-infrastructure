@@ -109,7 +109,7 @@ resource "aws_iam_instance_profile" "k3s_profile" {
   role = aws_iam_role.k3s_role.name
 }
 
-# Security group — allow SSH, HTTP, k3s API, and NodePort range
+# Security group — allow SSH, HTTP, k3s API, and NodePort
 resource "aws_security_group" "k3s_sg" {
     name	= "${var.project_name}-sg" 
     description = "Security group for K3s server" 
@@ -142,11 +142,19 @@ resource "aws_security_group" "k3s_sg" {
         cidr_blocks = ["0.0.0.0/0"]
     }
 
-    # NodePort range — for accessing apps deployed to K3s 
+    # NodePort — for accessing apps deployed to K3s 
     ingress {
-        description = "NodePort range" 
-        from_port = 30000
-        to_port	= 32767
+        description = "NodePort Frontend" 
+        from_port = 30080
+        to_port	= 30080
+        protocol= "tcp" 
+        cidr_blocks = ["0.0.0.0/0"]
+    }
+
+    ingress {
+        description = "NodePort Backend" 
+        from_port = 30050
+        to_port	= 30050
         protocol= "tcp" 
         cidr_blocks = ["0.0.0.0/0"]
     }
